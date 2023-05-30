@@ -110,7 +110,6 @@ async function compareRequest(toBeChecked: Request, expected: Request) {
 }
 
 async function compareResponse(toBeChecked: Response, expected: Response) {
-  expect(toBeChecked.status).toBe(expected.status);
   expected.headers.forEach((value, key) => {
     const toBeCheckedValue = toBeChecked.headers.get(key);
     expect({
@@ -121,6 +120,7 @@ async function compareResponse(toBeChecked: Response, expected: Response) {
       value,
     });
   });
+  expect(toBeChecked.status).toBe(expected.status);
 }
 async function compareReadableStream(
   toBeCheckedStream: ReadableStream | null,

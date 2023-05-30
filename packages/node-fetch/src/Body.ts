@@ -284,12 +284,13 @@ function processBodyInit(bodyInit: BodyPonyfillInit | null): {
     };
   }
   if (typeof bodyInit === 'string') {
+    const buffer = Buffer.from(bodyInit, 'utf-8');
     return {
       bodyType: BodyInitType.String,
       contentType: 'text/plain;charset=UTF-8',
-      contentLength: Buffer.byteLength(bodyInit),
+      contentLength: buffer.byteLength,
       bodyFactory() {
-        const readable = Readable.from(bodyInit);
+        const readable = Readable.from(buffer);
         return new PonyfillReadableStream<Uint8Array>(readable);
       },
     };

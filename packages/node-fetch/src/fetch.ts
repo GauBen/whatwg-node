@@ -1,15 +1,12 @@
 import { createReadStream } from 'fs';
-import { request as httpRequest } from 'http';
-import { request as httpsRequest } from 'https';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
-import { createBrotliDecompress, createGunzip, createInflate } from 'zlib';
-import { PonyfillAbortError } from './AbortError.js';
+import type { CurlyOptions } from 'node-libcurl/dist/curly.js';
 import { PonyfillBlob } from './Blob.js';
+import { PonyfillHeaders } from './Headers.js';
 import { PonyfillRequest, RequestPonyfillInit } from './Request.js';
 import { PonyfillResponse } from './Response.js';
 import { PonyfillURL } from './URL.js';
-import { getHeadersObj } from './utils.js';
 
 function getResponseForFile(url: string) {
   const path = fileURLToPath(url);
@@ -38,19 +35,9 @@ function getResponseForDataUri(url: URL) {
   });
 }
 
-function getRequestFnForProtocol(protocol: string) {
-  switch (protocol) {
-    case 'http:':
-      return httpRequest;
-    case 'https:':
-      return httpsRequest;
-  }
-  throw new Error(`Unsupported protocol: ${protocol}`);
-}
-
 const BASE64_SUFFIX = ';base64';
 
-export function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
+export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
   info: string | PonyfillRequest<TRequestJSON> | URL,
   init?: RequestPonyfillInit,
 ): Promise<PonyfillResponse<TResponseJSON>> {
@@ -61,105 +48,79 @@ export function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
 
   const fetchRequest = info;
 
-  return new Promise((resolve, reject) => {
-    try {
-      const url = new PonyfillURL(fetchRequest.url, 'http://localhost');
+  const url = new PonyfillURL(fetchRequest.url, 'http://localhost');
 
-      if (url.protocol === 'data:') {
-        const response = getResponseForDataUri(url);
-        resolve(response);
-        return;
-      }
+  if (url.protocol === 'data:') {
+    const response = getResponseForDataUri(url);
+    return Promise.resolve(response);
+  }
 
-      if (url.protocol === 'file:') {
-        const response = getResponseForFile(fetchRequest.url);
-        resolve(response);
-        return;
-      }
+  if (url.protocol === 'file:') {
+    const response = getResponseForFile(fetchRequest.url);
+    return Promise.resolve(response);
+  }
 
-      const requestFn = getRequestFnForProtocol(url.protocol);
+  const nodeReadable = (
+    fetchRequest.body != null
+      ? 'pipe' in fetchRequest.body
+        ? fetchRequest.body
+        : Readable.from(fetchRequest.body)
+      : null
+  ) as Readable | null;
 
-      const nodeReadable = (
-        fetchRequest.body != null
-          ? 'pipe' in fetchRequest.body
-            ? fetchRequest.body
-            : Readable.from(fetchRequest.body)
-          : null
-      ) as Readable | null;
-      const headersSerializer = fetchRequest.headersSerializer || getHeadersObj;
-      const nodeHeaders = headersSerializer(fetchRequest.headers);
+  const curlyHeaders: string[] = [];
 
-      const nodeRequest = requestFn(fetchRequest.url, {
-        method: fetchRequest.method,
-        headers: nodeHeaders,
-        signal: fetchRequest.signal,
-      });
+  let size: number | undefined;
 
-      // TODO: will be removed after v16 reaches EOL
-      fetchRequest.signal?.addEventListener('abort', () => {
-        if (!nodeRequest.aborted) {
-          nodeRequest.abort();
-        }
-      });
-      // TODO: will be removed after v16 reaches EOL
-      nodeRequest.once('abort', (reason: any) => {
-        reject(new PonyfillAbortError(reason));
-      });
-
-      nodeRequest.once('response', nodeResponse => {
-        let responseBody: Readable = nodeResponse;
-        const contentEncoding = nodeResponse.headers['content-encoding'];
-        switch (contentEncoding) {
-          case 'x-gzip':
-          case 'gzip':
-            responseBody = nodeResponse.pipe(createGunzip());
-            break;
-          case 'x-deflate':
-          case 'deflate':
-            responseBody = nodeResponse.pipe(createInflate());
-            break;
-          case 'br':
-            responseBody = nodeResponse.pipe(createBrotliDecompress());
-            break;
-        }
-        if (nodeResponse.headers.location) {
-          if (fetchRequest.redirect === 'error') {
-            const redirectError = new Error('Redirects are not allowed');
-            reject(redirectError);
-            nodeResponse.resume();
-            return;
-          }
-          if (fetchRequest.redirect === 'follow') {
-            const redirectedUrl = new PonyfillURL(nodeResponse.headers.location, url);
-            const redirectResponse$ = fetchPonyfill(redirectedUrl, info);
-            resolve(
-              redirectResponse$.then(redirectResponse => {
-                redirectResponse.redirected = true;
-                return redirectResponse;
-              }),
-            );
-            nodeResponse.resume();
-            return;
-          }
-        }
-        const responseHeaders: Record<string, string | string[] | undefined> = nodeResponse.headers;
-        const ponyfillResponse = new PonyfillResponse(responseBody, {
-          status: nodeResponse.statusCode,
-          statusText: nodeResponse.statusMessage,
-          headers: responseHeaders,
-          url: info.url,
-        });
-        resolve(ponyfillResponse);
-      });
-      nodeRequest.once('error', reject);
-
-      if (nodeReadable) {
-        nodeReadable.pipe(nodeRequest);
-      } else {
-        nodeRequest.end();
-      }
-    } catch (e) {
-      reject(e);
+  fetchRequest.headers.forEach((value, key) => {
+    curlyHeaders.push(`${key}: ${value}`);
+    if (key === 'content-length') {
+      size = Number(value);
     }
+  });
+
+  const curlyOptions: CurlyOptions = {
+    // we want the unparsed binary response to be returned as a stream to us
+    curlyStreamResponse: true,
+    curlyResponseBodyParser: false,
+    upload: nodeReadable != null,
+    transferEncoding: false,
+    httpTransferDecoding: true,
+    curlyStreamUpload: nodeReadable,
+    // this will just make libcurl use their own progress function (which is pretty neat)
+    // curlyProgressCallback() { return CurlProgressFunc.Continue },
+    // verbose: true,
+    httpHeader: curlyHeaders,
+    customRequest: fetchRequest.method,
+  };
+
+  if (size != null) {
+    curlyOptions.inFileSize = size;
+  }
+
+  const { curly, CurlCode } = await import('node-libcurl');
+
+  const curlyResult = await curly(fetchRequest.url, curlyOptions);
+
+  const responseHeaders = new PonyfillHeaders();
+  curlyResult.headers.forEach(headerInfo => {
+    for (const key in headerInfo) {
+      if (key !== 'result') {
+        responseHeaders.append(key, headerInfo[key]);
+      }
+    }
+  });
+  curlyResult.data.on('error', (err: any) => {
+    if (err.isCurlError && err.code === CurlCode.CURLE_ABORTED_BY_CALLBACK) {
+      // this is expected
+    } else {
+      throw err;
+    }
+  });
+
+  return new PonyfillResponse(curlyResult.data, {
+    status: curlyResult.statusCode,
+    headers: responseHeaders,
+    url: info.url,
   });
 }
