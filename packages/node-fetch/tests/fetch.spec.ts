@@ -1,5 +1,3 @@
-import { globalAgent as httpGlobalAgent } from 'http';
-import { globalAgent as httpsGlobalAgent } from 'https';
 import { Readable } from 'stream';
 import { PonyfillBlob } from '../src/Blob.js';
 import { fetchPonyfill } from '../src/fetch.js';
@@ -7,10 +5,6 @@ import { PonyfillFormData } from '../src/FormData.js';
 import { PonyfillReadableStream } from '../src/ReadableStream.js';
 
 describe('Node Fetch Ponyfill', () => {
-  afterAll(() => {
-    httpsGlobalAgent.destroy();
-    httpGlobalAgent.destroy();
-  });
   const baseUrl = process.env.CI ? 'http://localhost:8888' : 'https://httpbin.org';
   it('should fetch', async () => {
     const response = await fetchPonyfill(baseUrl + '/get');

@@ -1,7 +1,7 @@
+/* eslint-disable @typescript-eslint/no-this-alias */
 import { createReadStream } from 'fs';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
-import { CurlPause } from 'node-libcurl';
 import type { CurlyOptions } from 'node-libcurl/dist/curly.js';
 import { EasyNativeBinding } from 'node-libcurl/dist/types/index.js';
 import { PonyfillBlob } from './Blob.js';
@@ -83,12 +83,6 @@ export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
 
   let easyNativeBinding: EasyNativeBinding | undefined;
 
-  fetchRequest.signal.onabort = () => {
-    if (easyNativeBinding != null) {
-      easyNativeBinding.pause(CurlPause.Recv);
-    }
-  };
-
   const curlyOptions: CurlyOptions = {
     // we want the unparsed binary response to be returned as a stream to us
     curlyStreamResponse: true,
@@ -117,7 +111,13 @@ export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
     curlyOptions.inFileSize = size;
   }
 
-  const { curly, CurlCode } = await import('node-libcurl');
+  const { curly, CurlCode, CurlPause } = await import('node-libcurl');
+
+  fetchRequest.signal.onabort = () => {
+    if (easyNativeBinding != null) {
+      easyNativeBinding.pause(CurlPause.Recv);
+    }
+  };
 
   const curlyResult = await curly(fetchRequest.url, curlyOptions);
 
