@@ -1,7 +1,9 @@
 import { createReadStream } from 'fs';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
+import { CurlPause } from 'node-libcurl';
 import type { CurlyOptions } from 'node-libcurl/dist/curly.js';
+import { EasyNativeBinding } from 'node-libcurl/dist/types/index.js';
 import { PonyfillBlob } from './Blob.js';
 import { PonyfillHeaders } from './Headers.js';
 import { PonyfillRequest, RequestPonyfillInit } from './Request.js';
@@ -79,13 +81,30 @@ export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
     }
   });
 
+  let easyNativeBinding: EasyNativeBinding | undefined;
+
+  fetchRequest.signal.onabort = () => {
+    if (easyNativeBinding != null) {
+      easyNativeBinding.pause(CurlPause.Recv);
+    }
+  };
+
   const curlyOptions: CurlyOptions = {
     // we want the unparsed binary response to be returned as a stream to us
     curlyStreamResponse: true,
     curlyResponseBodyParser: false,
+    curlyProgressCallback() {
+      if (easyNativeBinding == null) {
+        easyNativeBinding = this;
+      }
+      return fetchRequest.signal.aborted ? 1 : 0;
+    },
     upload: nodeReadable != null,
     transferEncoding: false,
     httpTransferDecoding: true,
+    followLocation: fetchRequest.redirect === 'follow',
+    maxRedirs: 20,
+    acceptEncoding: '',
     curlyStreamUpload: nodeReadable,
     // this will just make libcurl use their own progress function (which is pretty neat)
     // curlyProgressCallback() { return CurlProgressFunc.Continue },
@@ -105,6 +124,9 @@ export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
   const responseHeaders = new PonyfillHeaders();
   curlyResult.headers.forEach(headerInfo => {
     for (const key in headerInfo) {
+      if (key === 'location' || (key === 'Location' && fetchRequest.redirect === 'error')) {
+        throw new Error('redirects are not allowed');
+      }
       if (key !== 'result') {
         responseHeaders.append(key, headerInfo[key]);
       }
