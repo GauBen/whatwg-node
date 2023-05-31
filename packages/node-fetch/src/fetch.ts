@@ -9,6 +9,7 @@ import { PonyfillHeaders } from './Headers.js';
 import { PonyfillRequest, RequestPonyfillInit } from './Request.js';
 import { PonyfillResponse } from './Response.js';
 import { PonyfillURL } from './URL.js';
+import { defaultHeadersSerializer } from './utils.js';
 
 function getResponseForFile(url: string) {
   const path = fileURLToPath(url);
@@ -70,15 +71,12 @@ export async function fetchPonyfill<TResponseJSON = any, TRequestJSON = any>(
       : null
   ) as Readable | null;
 
-  const curlyHeaders: string[] = [];
+  const headersSerializer = fetchRequest.headersSerializer || defaultHeadersSerializer;
 
   let size: number | undefined;
 
-  fetchRequest.headers.forEach((value, key) => {
-    curlyHeaders.push(`${key}: ${value}`);
-    if (key === 'content-length') {
-      size = Number(value);
-    }
+  const curlyHeaders: string[] = headersSerializer(fetchRequest.headers, value => {
+    size = Number(value);
   });
 
   let easyNativeBinding: EasyNativeBinding | undefined;
